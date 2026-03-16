@@ -632,6 +632,11 @@ router.get("/students-details", auth, async (req, res) => {
         up.placement_status,
         up.is_placed,
         up.is_profile_complete,
+        up.photo,
+        up.resume,
+        up.college_id_card,
+        up.marksheets,
+        up.profile_data,
         pc.has_agreed AS consent_has_agreed,
         pc.agreed_at AS consent_agreed_at,
         pc.signature AS consent_signature,
@@ -646,7 +651,40 @@ router.get("/students-details", auth, async (req, res) => {
       `
     );
 
+    const normalizeTextArray = (value) => {
+      if (!value) return [];
+      if (Array.isArray(value)) return value.filter(Boolean);
+      if (typeof value !== "string") return [];
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        const inner = trimmed.slice(1, -1);
+        if (!inner) return [];
+        return inner
+          .split(",")
+          .map((item) => item.trim().replace(/^"|"$/g, ""))
+          .filter(Boolean);
+      }
+      return [trimmed];
+    };
+
     const studentsData = students.map((student) => ({
+      documents: (() => {
+        const files = student.profile_data?.files || {};
+        const marksheets =
+          normalizeTextArray(student.marksheets).length > 0
+            ? normalizeTextArray(student.marksheets)
+            : Array.isArray(files.marksheets)
+              ? files.marksheets.filter(Boolean)
+              : [];
+
+        return {
+          photo: student.photo || files.photo || null,
+          resume: student.resume || files.resume || null,
+          collegeIdCard: student.college_id_card || files.collegeIdCard || null,
+          marksheets,
+        };
+      })(),
       _id: student.id,
       name: student.profile_name || student.name || "N/A",
       email: student.email,

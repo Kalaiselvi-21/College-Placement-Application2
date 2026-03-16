@@ -3,7 +3,25 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import toast from 'react-hot-toast';
-  const API_BASE = process.env.REACT_APP_API_BASE;
+const API_BASE = process.env.REACT_APP_API_BASE;
+
+const resolveSignatureUrl = (value) => {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (!API_BASE) return `/uploads/signatures/${trimmed}`;
+  return `${API_BASE.replace(/\/$/, "")}/uploads/signatures/${trimmed}`;
+};
+
+const resolveUploadUrl = (value) => {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (!API_BASE) return `/uploads/${trimmed}`;
+  return `${API_BASE.replace(/\/$/, "")}/uploads/${trimmed}`;
+};
 
 const StudentDetails = () => {
   const { user } = useAuth();
@@ -304,6 +322,9 @@ const StudentDetails = () => {
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Placement Status</th>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Consent Status</th>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Digital Signature</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resume</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID Card</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Marksheets</th>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">OTP Verified</th>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Profile Status</th>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Registered</th>
@@ -384,7 +405,7 @@ const StudentDetails = () => {
                       <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
                         {student.consentStatus?.signature ? (
                           <a 
-                            href={`${API_BASE}/uploads/signatures/${student.consentStatus.signature}`}
+                            href={resolveSignatureUrl(student.consentStatus.signature)}
                             target="_blank" 
                             rel="noopener noreferrer" 
                             className="text-blue-600 hover:underline"
@@ -393,6 +414,51 @@ const StudentDetails = () => {
                           </a>
                         ) : (
                           <span className="text-gray-400">No Signature</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {student.documents?.resume ? (
+                          <a
+                            href={resolveUploadUrl(student.documents.resume)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            View Resume
+                          </a>
+                        ) : (
+                          <span className="text-gray-400">N/A</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {student.documents?.collegeIdCard ? (
+                          <a
+                            href={resolveUploadUrl(student.documents.collegeIdCard)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            View ID
+                          </a>
+                        ) : (
+                          <span className="text-gray-400">N/A</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {student.documents?.marksheets?.length > 0 ? (
+                          student.documents.marksheets.map((marksheet, i) => (
+                            <a
+                              key={i}
+                              href={resolveUploadUrl(marksheet)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline block"
+                            >
+                              View {i + 1}
+                            </a>
+                          ))
+                        ) : (
+                          <span className="text-gray-400">N/A</span>
                         )}
                       </td>
                       <td className="px-3 py-4 whitespace-nowrap text-sm">

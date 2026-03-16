@@ -1,10 +1,10 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
 const cors = require("cors");
 const session = require("express-session");
 const passport = require("./config/passport");
-const path = require("path");
 const placementConsentRoutes = require("./routes/placementConsent");
 const http = require("http");
 const { Server } = require("socket.io");
