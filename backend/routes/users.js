@@ -18,11 +18,16 @@ const normalizeRole = (role) =>
 
 const isPoLike = (role) => {
   const normalized = normalizeRole(role);
-  return normalized === "po" || normalized === "placement_officer" || normalized === "placementofficer";
+  return (
+    normalized === "po" ||
+    normalized === "placement_officer" ||
+    normalized === "placementofficer"
+  );
 };
 
 const isPrivilegedCgpaUser = (req) =>
-  req.user.email === "bhavadharanimanikandan10@gmail.com" || isPoLike(req.user.roleNormalized || req.user.role);
+  req.user.email === "bhavadharanimanikandan10@gmail.com" ||
+  isPoLike(req.user.roleNormalized || req.user.role);
 
 const isLakshmiDebugUser = (req) => req.user.email === "lakshmiysc@gmail.com";
 
@@ -42,14 +47,17 @@ const parseCsvFile = (filePath) =>
           skipEmptyLines: true,
           trim: true,
           mapHeaders: ({ header }) => header.trim().replace(/[\r\n]/g, ""),
-        })
+        }),
       )
       .on("data", (data) => {
         const cleaned = {};
         for (const key of Object.keys(data)) {
           const cleanKey = key.trim().replace(/[\r\n]/g, "");
           cleaned[cleanKey] = data[key]
-            ? data[key].toString().trim().replace(/[\r\n]/g, "")
+            ? data[key]
+                .toString()
+                .trim()
+                .replace(/[\r\n]/g, "")
             : "";
         }
         rows.push(cleaned);
@@ -72,9 +80,17 @@ const extractRollNumber = (row) =>
   row["register_no"];
 
 const extractCgpa = (row) =>
-  row["CGPA"] || row["cgpa"] || row["Cgpa"] || row["GPA"] || row["gpa"] || row["Gpa"];
+  row["CGPA"] ||
+  row["cgpa"] ||
+  row["Cgpa"] ||
+  row["GPA"] ||
+  row["gpa"] ||
+  row["Gpa"];
 
-const findUserByRollNumber = async (rollNumber, roles = ["student", "placement_representative"]) => {
+const findUserByRollNumber = async (
+  rollNumber,
+  roles = ["student", "placement_representative"],
+) => {
   const rows = await neonService.executeRawQuery(
     `
     SELECT
@@ -99,7 +115,7 @@ const findUserByRollNumber = async (rollNumber, roles = ["student", "placement_r
     ORDER BY u.created_at ASC
     LIMIT 1
     `,
-    [rollNumber, roles]
+    [rollNumber, roles],
   );
 
   return rows[0] || null;
@@ -128,28 +144,32 @@ const findUserByEmail = async (email) => {
     WHERE LOWER(u.email) = LOWER($1)
     LIMIT 1
     `,
-    [email]
+    [email],
   );
 
   return rows[0] || null;
 };
 
 const updateUserCgpa = async (userId, cgpa) => {
+  // Ensure a profile row exists for the user, then set CGPA.
   const rows = await neonService.executeRawQuery(
     `
-    UPDATE user_profiles
-    SET cgpa = $2, updated_at = NOW()
-    WHERE user_id = $1
+    INSERT INTO user_profiles (user_id, cgpa, created_at, updated_at)
+    VALUES ($1, $2, NOW(), NOW())
+    ON CONFLICT (user_id) DO UPDATE
+    SET cgpa = EXCLUDED.cgpa, updated_at = NOW()
     RETURNING user_id, cgpa, roll_number, register_no, profile_name, department, phone_number
     `,
-    [userId, cgpa]
+    [userId, cgpa],
   );
 
   return rows[0] || null;
 };
 
 const upsertCgpaReference = async (rollNumber, cgpa) => {
-  const normalizedRoll = String(rollNumber || "").trim().toUpperCase();
+  const normalizedRoll = String(rollNumber || "")
+    .trim()
+    .toUpperCase();
   if (!normalizedRoll) {
     return null;
   }
@@ -162,100 +182,108 @@ const upsertCgpaReference = async (rollNumber, cgpa) => {
     DO UPDATE SET cgpa = EXCLUDED.cgpa, updated_at = NOW()
     RETURNING id, roll_number, cgpa
     `,
-    [normalizedRoll, cgpa]
+    [normalizedRoll, cgpa],
   );
 
   return rows[0] || null;
 };
 
-router.post("/upload-cgpa", auth, upload.single("csvFile"), async (req, res) => {
-  try {
-    logger.logAttempt("NEON", "CREATE", "User", "Uploading CGPA CSV data");
+router.post(
+  "/upload-cgpa",
+  auth,
+  upload.single("csvFile"),
+  async (req, res) => {
+    try {
+      logger.logAttempt("NEON", "CREATE", "User", "Uploading CGPA CSV data");
 
-    if (!isPrivilegedCgpaUser(req)) {
-      return res.status(403).json({
-        message: "Access denied - Only placement officers can upload CGPA data",
-        userRole: req.user.role,
-        userEmail: req.user.email,
-      });
-    }
+      if (!isPrivilegedCgpaUser(req)) {
+        return res.status(403).json({
+          message:
+            "Access denied - Only placement officers can upload CGPA data",
+          userRole: req.user.role,
+          userEmail: req.user.email,
+        });
+      }
 
-    if (!req.file) {
-      return res.status(400).json({ message: "No file uploaded" });
-    }
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
 
-    const rows = await parseCsvFile(req.file.path);
-    if (rows.length === 0) {
+      const rows = await parseCsvFile(req.file.path);
+      if (rows.length === 0) {
+        cleanupUploadedFile(req.file);
+        return res.json({
+          message: "No data found in CSV file",
+          updatedCount: 0,
+          errorCount: 0,
+          totalRows: 0,
+        });
+      }
+
+      let updatedCount = 0;
+      let errorCount = 0;
+
+      for (const row of rows) {
+        const rawRoll = extractRollNumber(row);
+        const rawCgpa = extractCgpa(row);
+
+        if (!rawRoll || !rawCgpa) {
+          errorCount += 1;
+          continue;
+        }
+
+        const cleanRollNo = String(rawRoll).trim();
+        const cleanCgpa = parseFloat(rawCgpa);
+
+        if (Number.isNaN(cleanCgpa)) {
+          errorCount += 1;
+          continue;
+        }
+
+        const user = await findUserByRollNumber(cleanRollNo);
+
+        if (user) {
+          await updateUserCgpa(user.id, cleanCgpa);
+          updatedCount += 1;
+        } else {
+          errorCount += 1;
+        }
+
+        await upsertCgpaReference(cleanRollNo, cleanCgpa);
+      }
+
       cleanupUploadedFile(req.file);
+
+      const io = req.app.get("io");
+      if (io) {
+        emitCGPAUpdate(io, "csv_uploaded", {
+          updatedCount,
+          errorCount,
+          totalRows: rows.length,
+        });
+      }
+
       return res.json({
-        message: "No data found in CSV file",
-        updatedCount: 0,
-        errorCount: 0,
-        totalRows: 0,
-      });
-    }
-
-    let updatedCount = 0;
-    let errorCount = 0;
-
-    for (const row of rows) {
-      const rawRoll = extractRollNumber(row);
-      const rawCgpa = extractCgpa(row);
-
-      if (!rawRoll || !rawCgpa) {
-        errorCount += 1;
-        continue;
-      }
-
-      const cleanRollNo = String(rawRoll).trim();
-      const cleanCgpa = parseFloat(rawCgpa);
-
-      if (Number.isNaN(cleanCgpa)) {
-        errorCount += 1;
-        continue;
-      }
-
-      const user = await findUserByRollNumber(cleanRollNo);
-
-      if (user) {
-        await updateUserCgpa(user.id, cleanCgpa);
-        updatedCount += 1;
-      } else {
-        errorCount += 1;
-      }
-
-      await upsertCgpaReference(cleanRollNo, cleanCgpa);
-    }
-
-    cleanupUploadedFile(req.file);
-
-    const io = req.app.get("io");
-    if (io) {
-      emitCGPAUpdate(io, "csv_uploaded", {
+        message: `CSV processed: ${updatedCount} updated, ${errorCount} errors`,
         updatedCount,
         errorCount,
         totalRows: rows.length,
+        details: {
+          csvHeaders: Object.keys(rows[0] || {}),
+          sampleData: rows.slice(0, 2),
+          note: "Updated CGPA for both students and placement representatives in NeonDB",
+        },
+        database: "NEON",
       });
+    } catch (error) {
+      cleanupUploadedFile(req.file);
+      console.error("Upload CGPA error:", error);
+      return res
+        .status(500)
+        .json({ message: "Server error", error: error.message });
     }
-
-    return res.json({
-      message: `CSV processed: ${updatedCount} updated, ${errorCount} errors`,
-      updatedCount,
-      errorCount,
-      totalRows: rows.length,
-      details: {
-        csvHeaders: Object.keys(rows[0] || {}),
-        sampleData: rows.slice(0, 2),
-        note: "Updated CGPA for both students and placement representatives in NeonDB",
-      },
-      database: "NEON",
-    });
-  } catch (error) {
-    cleanupUploadedFile(req.file);
-    console.error("Upload CGPA error:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
-  }
-});
+  },
+);
 
 router.get("/debug-students", auth, async (req, res) => {
   try {
@@ -265,7 +293,7 @@ router.get("/debug-students", auth, async (req, res) => {
     }
 
     const totalRows = await neonService.executeRawQuery(
-      `SELECT COUNT(*)::int AS count FROM users WHERE role = 'student'`
+      `SELECT COUNT(*)::int AS count FROM users WHERE role = 'student'`,
     );
     const students = await neonService.executeRawQuery(
       `
@@ -275,7 +303,7 @@ router.get("/debug-students", auth, async (req, res) => {
       WHERE u.role = 'student'
       ORDER BY u.created_at DESC
       LIMIT 10
-      `
+      `,
     );
 
     return res.json({
@@ -315,17 +343,30 @@ router.post("/debug-csv", auth, upload.single("csvFile"), async (req, res) => {
     });
   } catch (error) {
     cleanupUploadedFile(req.file);
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
   }
 });
 
 router.get("/debug-student/:rollNumber", auth, async (req, res) => {
   try {
-    logger.logAttempt("NEON", "READ", "User", "Debug: fetching student by roll number");
-    const student = await findUserByRollNumber(req.params.rollNumber, ["student"]);
+    logger.logAttempt(
+      "NEON",
+      "READ",
+      "User",
+      "Debug: fetching student by roll number",
+    );
+    const student = await findUserByRollNumber(req.params.rollNumber, [
+      "student",
+    ]);
 
     if (!student) {
-      return res.json({ found: false, rollNumber: req.params.rollNumber, database: "NEON" });
+      return res.json({
+        found: false,
+        rollNumber: req.params.rollNumber,
+        database: "NEON",
+      });
     }
 
     return res.json({
@@ -353,7 +394,7 @@ router.get("/debug-user-data", auth, async (req, res) => {
       FROM users u
       LEFT JOIN user_profiles up ON up.user_id = u.id
       ORDER BY u.created_at DESC
-      `
+      `,
     );
 
     return res.json({ users, database: "NEON" });
@@ -371,7 +412,7 @@ router.post("/fix-user-profile", auth, async (req, res) => {
 
     await neonService.executeRawQuery(
       `UPDATE users SET role = 'po', updated_at = NOW() WHERE id = $1`,
-      [req.user.id]
+      [req.user.id],
     );
     await neonService.executeRawQuery(
       `
@@ -380,7 +421,7 @@ router.post("/fix-user-profile", auth, async (req, res) => {
       ON CONFLICT (user_id)
       DO UPDATE SET profile_name = EXCLUDED.profile_name, updated_at = NOW()
       `,
-      [req.user.id]
+      [req.user.id],
     );
 
     const user = await findUserByEmail(req.user.email);
@@ -408,14 +449,23 @@ router.post("/fix-user-profile", auth, async (req, res) => {
 
 router.get("/debug-my-profile/:email", auth, async (req, res) => {
   try {
-    logger.logAttempt("NEON", "READ", "User", "Debug: fetching profile by email");
+    logger.logAttempt(
+      "NEON",
+      "READ",
+      "User",
+      "Debug: fetching profile by email",
+    );
     if (!isLakshmiDebugUser(req)) {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
     const student = await findUserByEmail(req.params.email);
     if (!student) {
-      return res.json({ found: false, email: req.params.email, database: "NEON" });
+      return res.json({
+        found: false,
+        email: req.params.email,
+        database: "NEON",
+      });
     }
 
     return res.json({
@@ -490,7 +540,9 @@ router.post("/update-cgpa-manual", auth, async (req, res) => {
 
 router.get("/pending-pr-verifications", auth, async (req, res) => {
   try {
-    if (!["po", "admin", "placement_officer"].includes(req.user.roleNormalized)) {
+    if (
+      !["po", "admin", "placement_officer"].includes(req.user.roleNormalized)
+    ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -511,7 +563,7 @@ router.get("/pending-pr-verifications", auth, async (req, res) => {
       WHERE u.role IN ('pr', 'placement_representative')
         AND COALESCE(vs.is_verified, false) = false
       ORDER BY u.created_at DESC
-      `
+      `,
     );
 
     return res.json({ pendingPRs, database: "NEON" });
@@ -523,14 +575,16 @@ router.get("/pending-pr-verifications", auth, async (req, res) => {
 
 router.put("/verify-pr/:prId", auth, async (req, res) => {
   try {
-    if (!["po", "admin", "placement_officer"].includes(req.user.roleNormalized)) {
+    if (
+      !["po", "admin", "placement_officer"].includes(req.user.roleNormalized)
+    ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
     const { status } = req.body;
     const rows = await neonService.executeRawQuery(
       `SELECT id, email, role FROM users WHERE id = $1 LIMIT 1`,
-      [req.params.prId]
+      [req.params.prId],
     );
     const pr = rows[0];
 
@@ -546,7 +600,7 @@ router.put("/verify-pr/:prId", auth, async (req, res) => {
       ON CONFLICT (user_id)
       DO UPDATE SET is_verified = $2, otp_verified = $2, updated_at = NOW()
       `,
-      [req.params.prId, approved]
+      [req.params.prId, approved],
     );
 
     return res.json({
@@ -571,7 +625,7 @@ router.get("/placed-students-count", auth, async (req, res) => {
     }
 
     const countRows = await neonService.executeRawQuery(
-      `SELECT COUNT(DISTINCT student_id)::int AS count FROM placed_students`
+      `SELECT COUNT(DISTINCT student_id)::int AS count FROM placed_students`,
     );
     const sampleRows = await neonService.executeRawQuery(
       `
@@ -580,7 +634,7 @@ router.get("/placed-students-count", auth, async (req, res) => {
       JOIN users u ON u.id = ps.student_id
       LEFT JOIN user_profiles up ON up.user_id = u.id
       LIMIT 5
-      `
+      `,
     );
 
     return res.json({
@@ -590,14 +644,18 @@ router.get("/placed-students-count", auth, async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching placed students count:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
   }
 });
 
 router.get("/students-details", auth, async (req, res) => {
   try {
     if (!["po", "placement_officer"].includes(req.user.roleNormalized)) {
-      return res.status(403).json({ message: "Access denied. Only PO can view student details." });
+      return res
+        .status(403)
+        .json({ message: "Access denied. Only PO can view student details." });
     }
 
     const students = await neonService.executeRawQuery(
@@ -627,6 +685,9 @@ router.get("/students-details", auth, async (req, res) => {
         up.diploma_percentage,
         up.linkedin_url,
         up.github_url,
+        up.resume_drive_link,
+        up.pan_card_drive_link,
+        up.aadhar_card_drive_link,
         up.current_backlogs,
         up.about_me,
         up.placement_status,
@@ -648,7 +709,7 @@ router.get("/students-details", auth, async (req, res) => {
       LEFT JOIN verification_status vs ON vs.user_id = u.id
       WHERE u.role IN ('student', 'placement_representative')
       ORDER BY up.profile_name ASC NULLS LAST, u.created_at DESC
-      `
+      `,
     );
 
     const normalizeTextArray = (value) => {
@@ -705,6 +766,19 @@ router.get("/students-details", auth, async (req, res) => {
       diplomaPercentage: student.diploma_percentage || "N/A",
       linkedinUrl: student.linkedin_url || "N/A",
       githubUrl: student.github_url || "N/A",
+      resumeDriveLink:
+        student.resume_drive_link && student.resume_drive_link.trim() !== ""
+          ? student.resume_drive_link
+          : student.profile_data?.resumeDriveLink || null,
+      panCardDriveLink:
+        student.pan_card_drive_link && student.pan_card_drive_link.trim() !== ""
+          ? student.pan_card_drive_link
+          : student.profile_data?.panCardDriveLink || null,
+      aadharCardDriveLink:
+        student.aadhar_card_drive_link &&
+        student.aadhar_card_drive_link.trim() !== ""
+          ? student.aadhar_card_drive_link
+          : student.profile_data?.aadharCardDriveLink || null,
       currentBacklogs: student.current_backlogs || 0,
       aboutMe: student.about_me || "N/A",
       placementStatus: student.placement_status || "unplaced",
@@ -722,24 +796,37 @@ router.get("/students-details", auth, async (req, res) => {
       role: student.role,
     }));
 
-    return res.json({ students: studentsData, count: studentsData.length, database: "NEON" });
+    return res.json({
+      students: studentsData,
+      count: studentsData.length,
+      database: "NEON",
+    });
   } catch (error) {
     console.error("Error fetching students details:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
   }
 });
 
 router.get("/deleted-users", auth, async (req, res) => {
   try {
-    if (!isPoLike(req.user.roleNormalized || req.user.role) && req.user.email !== "bhavadharanimanikandan10@gmail.com") {
+    if (
+      !isPoLike(req.user.roleNormalized || req.user.role) &&
+      req.user.email !== "bhavadharanimanikandan10@gmail.com"
+    ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
     const deletedUsers = await neonService.executeRawQuery(
-      `SELECT * FROM deleted_users ORDER BY deleted_at DESC`
+      `SELECT * FROM deleted_users ORDER BY deleted_at DESC`,
     );
 
-    return res.json({ count: deletedUsers.length, users: deletedUsers, database: "NEON" });
+    return res.json({
+      count: deletedUsers.length,
+      users: deletedUsers,
+      database: "NEON",
+    });
   } catch (error) {
     console.error("Error fetching deleted users:", error);
     return res.status(500).json({ message: "Server error" });
@@ -749,7 +836,9 @@ router.get("/deleted-users", auth, async (req, res) => {
 router.delete("/delete/:userId", auth, async (req, res) => {
   try {
     if (!isPoLike(req.user.roleNormalized || req.user.role)) {
-      return res.status(403).json({ message: "Access denied - Only Placement Officers can delete users" });
+      return res.status(403).json({
+        message: "Access denied - Only Placement Officers can delete users",
+      });
     }
 
     const { userId } = req.params;
@@ -759,12 +848,14 @@ router.delete("/delete/:userId", auth, async (req, res) => {
 
     // Prevent PO from deleting themselves
     if (userId === req.user.id) {
-      return res.status(400).json({ message: "Cannot delete your own account from this endpoint" });
+      return res
+        .status(400)
+        .json({ message: "Cannot delete your own account from this endpoint" });
     }
 
     const userToDelete = await neonService.executeRawQuery(
-      `SELECT id, email, role FROM users WHERE id = $1 LIMIT 1`,
-      [userId]
+      `SELECT id, name, email, role FROM users WHERE id = $1 LIMIT 1`,
+      [userId],
     );
 
     if (!userToDelete[0]) {
@@ -777,12 +868,19 @@ router.delete("/delete/:userId", auth, async (req, res) => {
     const targetRole = String(targetUser.role || "").toLowerCase();
     const allowedToDelete = ["student", "placement_representative", "pr"];
     if (!allowedToDelete.includes(targetRole)) {
-      return res.status(403).json({ message: "Cannot delete users with privileged roles" });
+      return res
+        .status(403)
+        .json({ message: "Cannot delete users with privileged roles" });
     }
 
     await neonService.deleteUserById(userId);
 
-    logger.logAttempt("NEON", "DELETE", "User", `PO deleted user: ${targetUser.email}`);
+    logger.logAttempt(
+      "NEON",
+      "DELETE",
+      "User",
+      `PO deleted user: ${targetUser.email}`,
+    );
 
     return res.json({
       message: `User ${targetUser.email} deleted successfully`,
@@ -790,7 +888,9 @@ router.delete("/delete/:userId", auth, async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting user:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
   }
 });
 
