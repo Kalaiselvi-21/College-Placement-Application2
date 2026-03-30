@@ -10,3 +10,6 @@ backend/uploads/
 
 # Local env variants
 .env.*
+.env
+backend/.env
+frontend-web/.env
